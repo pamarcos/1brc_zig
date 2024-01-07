@@ -2,7 +2,10 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 pub const std_options = struct {
-    pub const log_level = .info;
+    pub const log_level = switch (builtin.mode) {
+        .Debug => .debug,
+        else => .info,
+    };
 };
 
 const Measurement = struct {
@@ -32,25 +35,26 @@ const Context = struct {
     allocator: std.mem.Allocator,
     buffer: []const u8,
     wait_group: *std.Thread.WaitGroup,
-    map: HashMap,
     mutex: *std.Thread.Mutex,
     main_map: *HashMap,
 
     fn init(allocator: std.mem.Allocator, buffer: []const u8, wait_group: *std.Thread.WaitGroup, mutex: *std.Thread.Mutex, main_map: *HashMap) Self {
-        return .{ .allocator = allocator, .buffer = buffer, .wait_group = wait_group, .mutex = mutex, .main_map = main_map, .map = HashMap.init(allocator) };
+        return .{ .allocator = allocator, .buffer = buffer, .wait_group = wait_group, .mutex = mutex, .main_map = main_map };
     }
 
-    fn deinit(self: *Self) void {
-        self.map.deinit();
+    fn deinit(self: Self) void {
+        self.wait_group.finish();
     }
 };
 
-fn run(context: Context) void {
-    defer context.wait_group.finish();
+fn threadRun(context: Context) void {
+    // We need to initialize the HashMap on the same thread we destroy it
+    var map = HashMap.init(context.allocator);
+    defer map.deinit();
+    defer context.deinit();
 
     var pos: usize = 0;
     const buffer = context.buffer;
-    var map = context.map;
 
     while (pos < buffer.len) {
         const line_end = std.mem.indexOfScalarPos(u8, buffer, pos, '\n') orelse buffer.len;
@@ -58,7 +62,7 @@ fn run(context: Context) void {
         const temp_pos = std.mem.indexOfScalarPos(u8, line, 0, ';').?;
         const name = line[0..temp_pos];
         const temp = std.fmt.parseFloat(f32, line[temp_pos + 1 ..]) catch unreachable;
-        // std.log.debug("{s}: {d:.1}", .{ name, temp });
+        // std.log.debug("Thread {d}: {s} {d:.1}", .{ std.Thread.getCurrentId(), name, temp });
 
         const measurement_optional = map.getPtr(name);
         if (measurement_optional == null) {
@@ -79,6 +83,8 @@ fn run(context: Context) void {
         context.mutex.lock();
         defer context.mutex.unlock();
 
+        // std.log.debug("Thread {d}: adding {any}", .{ std.Thread.getCurrentId(), city });
+
         if (context.main_map.getPtr(city.key_ptr.*)) |value| {
             value.sum += city.value_ptr.sum;
             value.min = @min(value.min, city.value_ptr.min);
@@ -94,18 +100,19 @@ pub fn main() !void {
     var allocator: std.mem.Allocator = undefined;
 
     // Use the General Purpose Allocator to detect memory leaks if not in ReleaseFast
-    // TODO: for some reason it doesn't work with threads. Disabling for now
+    var gpa: ?std.heap.GeneralPurposeAllocator(.{}) = null;
     switch (builtin.mode) {
-        // .Debug, .ReleaseSafe => {
-        //     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-        //     defer {
-        //         if (gpa.deinit() == .leak) {
-        //             std.log.err("Memory leaked!", .{});
-        //         }
-        //     }
-        //     allocator = gpa.allocator();
-        // },
+        .Debug, .ReleaseSafe => {
+            gpa = std.heap.GeneralPurposeAllocator(.{}){};
+            allocator = gpa.?.allocator();
+        },
         else => allocator = std.heap.c_allocator,
+    }
+
+    defer {
+        if (gpa != null and gpa.?.deinit() == .leak) {
+            std.log.err("Memory leaked!", .{});
+        }
     }
 
     var args = try std.process.argsWithAllocator(allocator);
@@ -134,10 +141,11 @@ pub fn main() !void {
 
     for (0..num_threads) |_| {
         const end = std.mem.indexOfScalarPos(u8, file_ptr, prev_pos + chunk_size, '\n') orelse file_length;
-        const context = Context.init(allocator, file_ptr[prev_pos..end], &wait_group, &mutex, &map);
+        const thread_buffer = file_ptr[prev_pos..end];
+        const context = Context.init(allocator, thread_buffer, &wait_group, &mutex, &map);
         prev_pos = end + 1;
         wait_group.start();
-        try thread_pool.spawn(run, .{context});
+        try thread_pool.spawn(threadRun, .{context});
     }
 
     thread_pool.waitAndWork(&wait_group);
@@ -151,6 +159,7 @@ pub fn main() !void {
     }
 
     const cities = try array.toOwnedSlice();
+    defer allocator.free(cities);
     std.mem.sort([]const u8, cities, {}, lessThanString);
 
     _ = try std.io.getStdOut().write("{");
@@ -169,6 +178,4 @@ pub fn main() !void {
         i += 1;
     }
     _ = try std.io.getStdOut().write("}");
-
-    allocator.free(cities);
 }
