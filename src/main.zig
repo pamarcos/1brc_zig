@@ -60,7 +60,7 @@ fn run(context: Context) void {
         const temp = std.fmt.parseFloat(f32, line[temp_pos + 1 ..]) catch unreachable;
         // std.log.debug("{s}: {d:.1}", .{ name, temp });
 
-        var measurement_optional = map.getPtr(name);
+        const measurement_optional = map.getPtr(name);
         if (measurement_optional == null) {
             map.put(name, .{ .sum = temp, .max = temp, .min = temp, .amount = 1 }) catch unreachable;
         } else {
@@ -112,7 +112,7 @@ pub fn main() !void {
     defer args.deinit();
 
     _ = args.skip();
-    var filename = args.next() orelse "measurements.txt";
+    const filename = args.next() orelse "measurements.txt";
     const num_threads = try std.Thread.getCpuCount();
     std.log.info("Processing {s} file with {d} threads", .{ filename, num_threads });
 
@@ -133,8 +133,8 @@ pub fn main() !void {
     var prev_pos: usize = 0;
 
     for (0..num_threads) |_| {
-        var end = std.mem.indexOfScalarPos(u8, file_ptr, prev_pos + chunk_size, '\n') orelse file_length;
-        var context = Context.init(allocator, file_ptr[prev_pos..end], &wait_group, &mutex, &map);
+        const end = std.mem.indexOfScalarPos(u8, file_ptr, prev_pos + chunk_size, '\n') orelse file_length;
+        const context = Context.init(allocator, file_ptr[prev_pos..end], &wait_group, &mutex, &map);
         prev_pos = end + 1;
         wait_group.start();
         try thread_pool.spawn(run, .{context});
@@ -150,7 +150,7 @@ pub fn main() !void {
         try array.append(key.*);
     }
 
-    var cities = try array.toOwnedSlice();
+    const cities = try array.toOwnedSlice();
     std.mem.sort([]const u8, cities, {}, lessThanString);
 
     _ = try std.io.getStdOut().write("{");
@@ -159,7 +159,7 @@ pub fn main() !void {
     var i: u32 = 0;
     const stdout = std.io.getStdOut();
     for (cities) |city| {
-        var measurement = map.get(city).?;
+        const measurement = map.get(city).?;
         fbs.reset();
         try std.fmt.format(fbs.writer(), "{s}={d:.1}/{d:.1}/{d:.1}", .{ city, measurement.min, measurement.sum / @as(f32, @floatFromInt(measurement.amount)), measurement.max });
         _ = try stdout.write(fbs.getWritten());
