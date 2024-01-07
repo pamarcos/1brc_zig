@@ -43,13 +43,14 @@ pub fn main() !void {
     defer hash.deinit();
     var file = try std.fs.cwd().openFile(filename, .{});
     defer file.close();
+    const file_length = try file.getEndPos();
+    const file_ptr = try std.os.mmap(null, file_length, std.os.PROT.READ, std.os.MAP.PRIVATE, file.handle, 0);
+    defer std.os.munmap(file_ptr);
 
-    var buf_reader = std.io.bufferedReader(file.reader());
-    var in_stream = buf_reader.reader();
-
-    var buf: [1024]u8 = undefined;
-    var line_number: u32 = 0;
-    while (try in_stream.readUntilDelimiterOrEof(&buf, '\n')) |line| : (line_number += 1) {
+    var pos: usize = 0;
+    while (pos < file_length) {
+        const line_end = std.mem.indexOfScalarPos(u8, file_ptr, pos, '\n') orelse file_length;
+        const line = file_ptr[pos..line_end];
         const temp_pos = std.mem.indexOfScalarPos(u8, line, 0, ';').?;
         const name = line[0..temp_pos];
         const temp = try std.fmt.parseFloat(f32, line[temp_pos + 1 ..]);
@@ -57,9 +58,7 @@ pub fn main() !void {
 
         var measurement_optional = hash.getPtr(name);
         if (measurement_optional == null) {
-            var copy_name = try allocator.alloc(u8, name.len);
-            std.mem.copyForwards(u8, copy_name, name);
-            try hash.put(copy_name, .{ .sum = temp, .max = temp, .min = temp, .amount = 1 });
+            try hash.put(name, .{ .sum = temp, .max = temp, .min = temp, .amount = 1 });
         } else {
             var measurement = measurement_optional.?;
             measurement.sum += temp;
@@ -67,6 +66,8 @@ pub fn main() !void {
             measurement.max = @max(measurement.max, temp);
             measurement.amount += 1;
         }
+
+        pos = line_end + 1;
     }
 
     var array = std.ArrayList([]const u8).init(allocator);
@@ -81,6 +82,7 @@ pub fn main() !void {
     std.mem.sort([]const u8, cities, {}, lessThanString);
 
     _ = try std.io.getStdOut().write("{");
+    var buf: [128]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
     var i: u32 = 0;
     const stdout = std.io.getStdOut();
@@ -88,7 +90,6 @@ pub fn main() !void {
         var measurement = hash.get(city).?;
         fbs.reset();
         try std.fmt.format(fbs.writer(), "{s}={d:.1}/{d:.1}/{d:.1}", .{ city, measurement.min, measurement.sum / @as(f32, @floatFromInt(measurement.amount)), measurement.max });
-        allocator.free(city);
         _ = try stdout.write(fbs.getWritten());
         if (i != cities.len - 1) {
             _ = try stdout.write(", ");
