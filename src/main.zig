@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const Measurement = struct {
     sum: f64,
@@ -24,13 +25,21 @@ pub const std_options = struct {
 };
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer {
-        if (gpa.deinit() == .leak) {
-            std.log.err("Memory leaked!", .{});
-        }
+    var allocator: std.mem.Allocator = undefined;
+
+    // Use the General Purpose Allocator to detect memory leaks if not in ReleaseFast
+    switch (builtin.mode) {
+        .Debug, .ReleaseSafe => {
+            var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+            defer {
+                if (gpa.deinit() == .leak) {
+                    std.log.err("Memory leaked!", .{});
+                }
+            }
+            allocator = gpa.allocator();
+        },
+        else => allocator = std.heap.c_allocator,
     }
-    const allocator = gpa.allocator();
 
     var args = try std.process.argsWithAllocator(allocator);
     defer args.deinit();
